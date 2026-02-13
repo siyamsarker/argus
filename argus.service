@@ -1,0 +1,32 @@
+[Unit]
+Description=Argus — Loki & Grafana Health Monitor
+Documentation=https://github.com/siyamsarker/argus
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=argus
+Group=argus
+
+WorkingDirectory=/opt/argus
+ExecStart=/opt/argus/venv/bin/python /opt/argus/argus.py
+EnvironmentFile=/opt/argus/.env
+
+Restart=on-failure
+RestartSec=30
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log/argus
+PrivateTmp=true
+
+# Logging (stdout/stderr → journald)
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=argus
+
+[Install]
+WantedBy=multi-user.target
