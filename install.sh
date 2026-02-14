@@ -34,47 +34,58 @@ PYTHON_VERSION=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.v
 PYTHON_MAJOR=$(echo "$PYTHON_VERSION" | cut -d. -f1)
 PYTHON_MINOR=$(echo "$PYTHON_VERSION" | cut -d. -f2)
 
+DISTRO_ID="unknown"
+if [[ -f /etc/os-release ]]; then
+    . /etc/os-release
+    DISTRO_ID="${ID:-unknown}"
+fi
+
 if [[ "$PYTHON_MAJOR" -lt 3 ]] || { [[ "$PYTHON_MAJOR" -eq 3 ]] && [[ "$PYTHON_MINOR" -lt 10 ]]; }; then
     echo "ERROR: Python 3.10+ is required (found $PYTHON_VERSION)." >&2
     exit 1
 fi
 
+install_venv_dependencies() {
+    case "$DISTRO_ID" in
+        ubuntu|debian|linuxmint|pop)
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -y
+            if ! apt-get install -y "python${PYTHON_VERSION}-venv"; then
+                apt-get install -y python3-venv
+            fi
+            ;;
+        fedora|rhel|centos|rocky|almalinux)
+            if command -v dnf &>/dev/null; then
+                dnf install -y "python${PYTHON_MAJOR}-pip" || dnf install -y python3-pip
+            elif command -v yum &>/dev/null; then
+                yum install -y "python${PYTHON_MAJOR}-pip" || yum install -y python3-pip
+            else
+                return 1
+            fi
+            ;;
+        arch|manjaro|endeavouros)
+            pacman -Sy --noconfirm python
+            ;;
+        opensuse*|sles)
+            zypper --non-interactive install "python${PYTHON_MAJOR}-pip" || zypper --non-interactive install python3-pip
+            ;;
+        alpine)
+            apk add --no-cache python3
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 # Ensure the venv module is available (not always installed by default)
 if ! python3 -c "import venv" &>/dev/null; then
-    echo "ERROR: Python venv module is not installed." >&2
-    echo "" >&2
-
-    # Detect distribution and provide appropriate install command
-    if [[ -f /etc/os-release ]]; then
-        . /etc/os-release
-        case "${ID:-unknown}" in
-            ubuntu|debian|linuxmint|pop)
-                echo "       Install it with:  sudo apt install python${PYTHON_VERSION}-venv" >&2
-                ;;
-            fedora|rhel|centos|rocky|almalinux)
-                echo "       Install it with:  sudo dnf install python${PYTHON_MAJOR}-pip" >&2
-                echo "                    or:  sudo yum install python${PYTHON_MAJOR}-pip" >&2
-                ;;
-            arch|manjaro|endeavouros)
-                echo "       Python venv should be included with python package." >&2
-                echo "       If missing, reinstall:  sudo pacman -S python" >&2
-                ;;
-            opensuse*|sles)
-                echo "       Install it with:  sudo zypper install python${PYTHON_MAJOR}-pip" >&2
-                ;;
-            alpine)
-                echo "       Install it with:  sudo apk add python3" >&2
-                ;;
-            *)
-                echo "       Install the Python venv module for your distribution." >&2
-                echo "       Package names: python3-venv, python${PYTHON_MAJOR}-pip, or similar" >&2
-                ;;
-        esac
-    else
-        echo "       Install the Python venv module for your distribution." >&2
+    echo "Python venv module is missing - attempting automatic installation..."
+    if ! install_venv_dependencies || ! python3 -c "import venv" &>/dev/null; then
+        echo "ERROR: Python venv module is not installed and auto-install failed." >&2
+        echo "       Install the venv package for your distribution, then rerun install.sh." >&2
+        exit 1
     fi
-
-    exit 1
 fi
 
 # ---------------------------------------------------------------------------
@@ -142,16 +153,38 @@ chown -R "$SERVICE_NAME":"$SERVICE_NAME" "$INSTALL_DIR"
 
 echo "Setting up Python virtual environment..."
 
+create_venv() {
+    python3 -m venv "$INSTALL_DIR/venv"
+}
+
 # Create venv only if it doesn't already exist (safe for reinstalls)
 if [[ ! -d "$INSTALL_DIR/venv" ]]; then
-    python3 -m venv "$INSTALL_DIR/venv"
+    if ! create_venv; then
+        echo "Initial venv creation failed - attempting to install missing dependencies..."
+        if install_venv_dependencies; then
+            create_venv
+        else
+            echo "ERROR: Failed to create Python virtual environment." >&2
+            echo "       Could not auto-install venv dependencies for this distribution." >&2
+            exit 1
+        fi
+    fi
 fi
 
 # Validate venv is complete - if pip is missing, the venv is corrupted
 if [[ ! -f "$INSTALL_DIR/venv/bin/pip" ]]; then
     echo "Incomplete venv detected - recreating..."
     rm -rf "$INSTALL_DIR/venv"
-    python3 -m venv "$INSTALL_DIR/venv"
+    if ! create_venv; then
+        echo "Recreation failed - attempting to install missing dependencies..."
+        if install_venv_dependencies; then
+            create_venv
+        else
+            echo "ERROR: Failed to recreate Python virtual environment." >&2
+            echo "       Could not auto-install venv dependencies for this distribution." >&2
+            exit 1
+        fi
+    fi
 fi
 
 # Verify venv creation succeeded
