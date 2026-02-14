@@ -260,7 +260,7 @@ Key implementation details:
 - **1-second sleep granularity** inside the interval loop for prompt signal response
 - **Top-level exception handler** wraps the main loop so the daemon never crashes
 - **systemd** handles process supervision (`Restart=on-failure`, `RestartSec=30`)
-- **Security hardening** in the unit file: `NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`
+- **Security hardening** in the unit file: `NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, `ProtectKernelTunables`, `ProtectKernelModules`, `ProtectControlGroups`
 
 ## Uninstall
 
