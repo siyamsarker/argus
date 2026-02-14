@@ -86,7 +86,7 @@ sudo bash install.sh
 
 The install script is fully automated and works across all major Linux distributions. It will:
 
-- Validate Python 3.10+ and check for the venv module (with distro-specific install instructions if missing)
+- Validate Python 3.10+ and automatically install missing venv dependencies using distro-specific package managers
 - Detect your Linux distribution (Ubuntu, Debian, Fedora, RHEL, CentOS, Rocky, AlmaLinux, Arch, openSUSE, Alpine, etc.)
 - Create an `argus` system user with no login shell (location auto-detected by distro)
 - Set up `/opt/argus/` with a Python virtual environment
