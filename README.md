@@ -7,7 +7,7 @@
   </p>
   <p align="center">
     <img src="https://img.shields.io/badge/python-3.10%2B-blue" alt="Python 3.10+">
-    <img src="https://img.shields.io/badge/platform-Ubuntu%20%7C%20Debian-orange" alt="Platform">
+    <img src="https://img.shields.io/badge/platform-Linux-orange" alt="Platform">
     <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
     <img src="https://img.shields.io/badge/status-production--ready-brightgreen" alt="Status">
   </p>
@@ -50,8 +50,8 @@ argus/
 
 ## Prerequisites
 
-- **Ubuntu / Debian** server (or any systemd-based Linux distribution)
-- **Python 3.10+**
+- **Linux server** with systemd (Ubuntu, Debian, RHEL, CentOS, Fedora, Rocky, AlmaLinux, Arch, openSUSE, Alpine, or derivatives)
+- **Python 3.10+** with venv module
 - A **Discord webhook URL** ([how to create one](https://support.discord.com/hc/en-us/articles/228383668-Intro-to-Webhooks))
 - Running **Loki** and **Grafana** instance(s) with accessible health endpoints
 
@@ -84,13 +84,19 @@ DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/YOUR_ID/YOUR_TOKEN
 sudo bash install.sh
 ```
 
-The install script will:
+The install script is fully automated and works across all major Linux distributions. It will:
 
-- Create an `argus` system user (no login shell)
+- Validate Python 3.10+ and check for the venv module (with distro-specific install instructions if missing)
+- Detect your Linux distribution (Ubuntu, Debian, Fedora, RHEL, CentOS, Rocky, AlmaLinux, Arch, openSUSE, Alpine, etc.)
+- Create an `argus` system user with no login shell (location auto-detected by distro)
 - Set up `/opt/argus/` with a Python virtual environment
+- Automatically detect and recover from corrupted venv installations
 - Install pinned dependencies (`requests`, `python-dotenv`)
+- Validate systemd availability
 - Copy the systemd unit file, enable, and start the service
 - Create `/var/log/argus/` with proper ownership
+
+**No manual intervention required** — the script handles distro-specific differences automatically.
 
 ### 3. Verify
 
@@ -283,6 +289,9 @@ sudo rm -rf /opt/argus /var/log/argus
 | Alerts are delayed | Decrease `CHECK_INTERVAL_SECONDS` for faster detection |
 | Permission denied on log file | Run `sudo chown argus:argus /var/log/argus` |
 | Python version error | Argus requires Python 3.10+. Check with `python3 --version` |
+| Python venv module missing | The install script will detect your distro and show the correct package install command (e.g., `apt install python3.X-venv` for Ubuntu/Debian, `dnf install python3-pip` for Fedora/RHEL) |
+| Install fails with corrupted venv | The script automatically detects and recreates corrupted virtual environments — simply re-run `sudo bash install.sh` |
+| systemd not available | Argus requires systemd. The script will detect non-systemd systems and provide manual setup instructions |
 | Config not taking effect | Restart the service after editing `.env`: `sudo systemctl restart argus` |
 
 ## Contributing
