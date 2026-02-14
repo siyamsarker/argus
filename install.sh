@@ -107,6 +107,20 @@ if [[ ! -d "$INSTALL_DIR/venv" ]]; then
     python3 -m venv "$INSTALL_DIR/venv"
 fi
 
+# Validate venv is complete - if pip is missing, the venv is corrupted
+if [[ ! -f "$INSTALL_DIR/venv/bin/pip" ]]; then
+    echo "Incomplete venv detected - recreating..."
+    rm -rf "$INSTALL_DIR/venv"
+    python3 -m venv "$INSTALL_DIR/venv"
+fi
+
+# Verify venv creation succeeded
+if [[ ! -f "$INSTALL_DIR/venv/bin/pip" ]]; then
+    echo "ERROR: Failed to create Python virtual environment." >&2
+    echo "       The venv module may not be functioning correctly." >&2
+    exit 1
+fi
+
 "$INSTALL_DIR/venv/bin/pip" install --quiet --upgrade pip
 "$INSTALL_DIR/venv/bin/pip" install --quiet -r "$INSTALL_DIR/requirements.txt"
 
