@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Argus v1.0.0 — The Hundred-Eyed Monitor
+Argus v1.1.0 — The Hundred-Eyed Monitor
 
-A lightweight health-monitoring daemon that watches Loki and Grafana instances
-and sends Discord alerts on state transitions. Named after Argus Panoptes,
-the hundred-eyed giant of Greek mythology who never sleeps.
+A lightweight health-monitoring daemon that watches one or more Loki and Grafana
+instances and sends Discord alerts on state transitions. Named after Argus
+Panoptes, the hundred-eyed giant of Greek mythology who never sleeps.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ from dotenv import load_dotenv
 # Constants
 # ---------------------------------------------------------------------------
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 BANNER = f"Argus v{VERSION} — The Hundred-Eyed Monitor"
 LOG_DIR = "/var/log/argus"
 LOG_FILE = os.path.join(LOG_DIR, "argus.log")
@@ -48,13 +48,18 @@ HOSTNAME = socket.gethostname()
 # ---------------------------------------------------------------------------
 
 class Config:
-    """Validated runtime configuration loaded from environment / .env."""
+    """Validated runtime configuration loaded from environment / .env.
+
+    Supports multiple Loki and Grafana instances via comma-separated URLs
+    in LOKI_URL and GRAFANA_URL (e.g. ``http://host1:3100,http://host2:3100``).
+    A single URL works as before for backward compatibility.
+    """
 
     def __init__(self) -> None:
         load_dotenv()
 
-        self.loki_url: str = self._require("LOKI_URL")
-        self.grafana_url: str = self._require("GRAFANA_URL")
+        self.loki_urls: list[str] = self._require_urls("LOKI_URL")
+        self.grafana_urls: list[str] = self._require_urls("GRAFANA_URL")
         self.discord_webhook_url: str = self._require("DISCORD_WEBHOOK_URL")
 
         self.check_interval: int = self._require_int("CHECK_INTERVAL_SECONDS", 120)
@@ -76,6 +81,23 @@ class Config:
         return value
 
     @staticmethod
+    def _require_urls(key: str) -> list[str]:
+        """Return a list of URLs from a comma-separated env var, or exit.
+
+        Supports both single URLs (backward compatible) and comma-separated
+        lists for multi-instance monitoring.
+        """
+        value = os.getenv(key)
+        if not value:
+            print(f"FATAL: Required environment variable '{key}' is not set.", file=sys.stderr)
+            sys.exit(1)
+        urls = [u.strip() for u in value.split(",") if u.strip()]
+        if not urls:
+            print(f"FATAL: '{key}' contains no valid URLs.", file=sys.stderr)
+            sys.exit(1)
+        return urls
+
+    @staticmethod
     def _require_int(key: str, default: int) -> int:
         """Return an env var as int, or exit with a clear error if not numeric."""
         raw = os.getenv(key, str(default))
@@ -87,15 +109,20 @@ class Config:
 
     def _validate(self) -> None:
         """Validate URLs and numeric ranges; exit on invalid config."""
-        for name, url in [
-            ("LOKI_URL", self.loki_url),
-            ("GRAFANA_URL", self.grafana_url),
-            ("DISCORD_WEBHOOK_URL", self.discord_webhook_url),
-        ]:
-            parsed = urlparse(url)
-            if parsed.scheme not in ("http", "https") or not parsed.netloc:
-                print(f"FATAL: '{name}' is not a valid URL: {url}", file=sys.stderr)
-                sys.exit(1)
+        for name, urls in [("LOKI_URL", self.loki_urls), ("GRAFANA_URL", self.grafana_urls)]:
+            for url in urls:
+                parsed = urlparse(url)
+                if parsed.scheme not in ("http", "https") or not parsed.netloc:
+                    print(f"FATAL: '{name}' contains an invalid URL: {url}", file=sys.stderr)
+                    sys.exit(1)
+
+        parsed = urlparse(self.discord_webhook_url)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            print(
+                f"FATAL: 'DISCORD_WEBHOOK_URL' is not a valid URL: {self.discord_webhook_url}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
         if self.check_interval < 1:
             print("FATAL: CHECK_INTERVAL_SECONDS must be >= 1.", file=sys.stderr)
@@ -273,6 +300,18 @@ def check_grafana(session: requests.Session, url: str, timeout: int) -> tuple[bo
 # Service state tracker
 # ---------------------------------------------------------------------------
 
+def _instance_label(service_type: str, url: str, total: int) -> str:
+    """Generate a display label for a service instance.
+
+    Uses just the service type for single instances (e.g. ``Loki``), and
+    appends the host for multiple instances (e.g. ``Loki (host:3100)``).
+    """
+    if total == 1:
+        return service_type
+    parsed = urlparse(url)
+    return f"{service_type} ({parsed.netloc})"
+
+
 class ServiceState:
     """Track consecutive failures and healthy/unhealthy state for a service."""
 
@@ -375,6 +414,8 @@ def send_startup_notification(
         {"name": "Host", "value": HOSTNAME, "inline": True},
         {"name": "Interval", "value": f"{config.check_interval}s", "inline": True},
         {"name": "Failure Threshold", "value": str(config.failure_threshold), "inline": True},
+        {"name": "Loki", "value": ", ".join(config.loki_urls), "inline": False},
+        {"name": "Grafana", "value": ", ".join(config.grafana_urls), "inline": False},
         {"name": "Started At", "value": now, "inline": False},
     ]
     ok = send_discord_embed(
@@ -423,11 +464,12 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
 
-    # HTTP session with connection pooling
+    # HTTP session with connection pooling (sized for all monitored instances)
     session = requests.Session()
+    pool_size = len(config.loki_urls) + len(config.grafana_urls) + 2
     adapter = HTTPAdapter(
-        pool_connections=5,
-        pool_maxsize=5,
+        pool_connections=pool_size,
+        pool_maxsize=pool_size,
         max_retries=0,  # we handle retries ourselves
     )
     session.mount("http://", adapter)
@@ -436,57 +478,73 @@ def main() -> None:
     # Startup notification
     send_startup_notification(session, config.discord_webhook_url, config, logger)
 
-    # Service states — track consecutive failures per service for stateful alerting
-    loki = ServiceState("Loki", config.failure_threshold)
-    grafana = ServiceState("Grafana", config.failure_threshold)
+    # Service states — one per monitored instance for independent tracking
+    loki_instances: list[tuple[str, ServiceState]] = [
+        (url, ServiceState(
+            _instance_label("Loki", url, len(config.loki_urls)),
+            config.failure_threshold,
+        ))
+        for url in config.loki_urls
+    ]
+    grafana_instances: list[tuple[str, ServiceState]] = [
+        (url, ServiceState(
+            _instance_label("Grafana", url, len(config.grafana_urls)),
+            config.failure_threshold,
+        ))
+        for url in config.grafana_urls
+    ]
 
+    loki_summary = ", ".join(config.loki_urls)
+    grafana_summary = ", ".join(config.grafana_urls)
     logger.info(
-        "Monitoring started — Loki: %s | Grafana: %s | Interval: %ds | Threshold: %d",
-        config.loki_url, config.grafana_url, config.check_interval, config.failure_threshold,
+        "Monitoring started — Loki: [%s] | Grafana: [%s] | Interval: %ds | Threshold: %d",
+        loki_summary, grafana_summary, config.check_interval, config.failure_threshold,
     )
 
     # ----- main loop -------------------------------------------------------
     while not _shutdown_requested:
         try:
-            # -- Loki check --------------------------------------------------
-            healthy, reason = check_loki(session, config.loki_url, config.request_timeout)
-            logger.debug("Loki check: healthy=%s reason=%s", healthy, reason)
+            # -- Loki checks -------------------------------------------------
+            for url, state in loki_instances:
+                healthy, reason = check_loki(session, url, config.request_timeout)
+                logger.debug("%s check: healthy=%s reason=%s", state.name, healthy, reason)
 
-            if healthy:
-                transitioned = loki.record_success()
-                if transitioned:
-                    logger.info("Loki recovered.")
-                    send_recovery(session, config.discord_webhook_url, loki, logger)
-            else:
-                transitioned = loki.record_failure(reason)
-                if transitioned:
-                    logger.warning("Loki is UNHEALTHY: %s", reason)
-                    send_alert(session, config.discord_webhook_url, loki, logger)
+                if healthy:
+                    transitioned = state.record_success()
+                    if transitioned:
+                        logger.info("%s recovered.", state.name)
+                        send_recovery(session, config.discord_webhook_url, state, logger)
                 else:
-                    logger.debug(
-                        "Loki failure %d/%d: %s",
-                        loki.consecutive_failures, config.failure_threshold, reason,
-                    )
+                    transitioned = state.record_failure(reason)
+                    if transitioned:
+                        logger.warning("%s is UNHEALTHY: %s", state.name, reason)
+                        send_alert(session, config.discord_webhook_url, state, logger)
+                    else:
+                        logger.debug(
+                            "%s failure %d/%d: %s",
+                            state.name, state.consecutive_failures, config.failure_threshold, reason,
+                        )
 
-            # -- Grafana check -----------------------------------------------
-            healthy, reason = check_grafana(session, config.grafana_url, config.request_timeout)
-            logger.debug("Grafana check: healthy=%s reason=%s", healthy, reason)
+            # -- Grafana checks ----------------------------------------------
+            for url, state in grafana_instances:
+                healthy, reason = check_grafana(session, url, config.request_timeout)
+                logger.debug("%s check: healthy=%s reason=%s", state.name, healthy, reason)
 
-            if healthy:
-                transitioned = grafana.record_success()
-                if transitioned:
-                    logger.info("Grafana recovered.")
-                    send_recovery(session, config.discord_webhook_url, grafana, logger)
-            else:
-                transitioned = grafana.record_failure(reason)
-                if transitioned:
-                    logger.warning("Grafana is UNHEALTHY: %s", reason)
-                    send_alert(session, config.discord_webhook_url, grafana, logger)
+                if healthy:
+                    transitioned = state.record_success()
+                    if transitioned:
+                        logger.info("%s recovered.", state.name)
+                        send_recovery(session, config.discord_webhook_url, state, logger)
                 else:
-                    logger.debug(
-                        "Grafana failure %d/%d: %s",
-                        grafana.consecutive_failures, config.failure_threshold, reason,
-                    )
+                    transitioned = state.record_failure(reason)
+                    if transitioned:
+                        logger.warning("%s is UNHEALTHY: %s", state.name, reason)
+                        send_alert(session, config.discord_webhook_url, state, logger)
+                    else:
+                        logger.debug(
+                            "%s failure %d/%d: %s",
+                            state.name, state.consecutive_failures, config.failure_threshold, reason,
+                        )
 
         # Catch-all: log the error and keep the daemon alive.
         # systemd Restart=on-failure handles truly fatal crashes.
