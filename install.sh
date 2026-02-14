@@ -7,12 +7,13 @@
 # Usage:  sudo bash install.sh
 # ============================================================================
 
-set -euo pipefail
+set -euo pipefail  # Exit on error, undefined vars, and pipe failures
 
+# Paths and naming — change these if you want a custom install location
 INSTALL_DIR="/opt/argus"
 LOG_DIR="/var/log/argus"
 SERVICE_NAME="argus"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"  # directory where this script lives
 
 # ---------------------------------------------------------------------------
 # Pre-flight checks
@@ -28,6 +29,7 @@ if ! command -v python3 &>/dev/null; then
     exit 1
 fi
 
+# Enforce Python 3.10+ (required for type hint syntax used in argus.py)
 PYTHON_VERSION=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
 PYTHON_MAJOR=$(echo "$PYTHON_VERSION" | cut -d. -f1)
 PYTHON_MINOR=$(echo "$PYTHON_VERSION" | cut -d. -f2)
@@ -41,6 +43,8 @@ fi
 # Create system user
 # ---------------------------------------------------------------------------
 
+# Create a dedicated system user with no login shell for security.
+# The daemon runs as this user instead of root.
 if ! id "$SERVICE_NAME" &>/dev/null; then
     echo "Creating system user '$SERVICE_NAME'..."
     useradd --system --no-create-home --shell /usr/sbin/nologin "$SERVICE_NAME"
@@ -58,7 +62,7 @@ mkdir -p "$INSTALL_DIR"
 mkdir -p "$LOG_DIR"
 
 chown "$SERVICE_NAME":"$SERVICE_NAME" "$LOG_DIR"
-chmod 750 "$LOG_DIR"
+chmod 750 "$LOG_DIR"  # owner rwx, group rx, others none
 
 # ---------------------------------------------------------------------------
 # Copy application files
@@ -69,7 +73,9 @@ echo "Copying application files to $INSTALL_DIR..."
 cp "$SCRIPT_DIR/argus.py" "$INSTALL_DIR/argus.py"
 cp "$SCRIPT_DIR/requirements.txt" "$INSTALL_DIR/requirements.txt"
 
-# Copy .env if it exists; otherwise copy the example as a starting point
+# Copy .env if it exists in the source directory; otherwise fall back to the
+# example template. Never overwrite an existing .env in the install directory
+# to avoid destroying a working configuration on reinstall.
 if [[ -f "$SCRIPT_DIR/.env" ]]; then
     cp "$SCRIPT_DIR/.env" "$INSTALL_DIR/.env"
 elif [[ ! -f "$INSTALL_DIR/.env" ]]; then
@@ -80,7 +86,7 @@ elif [[ ! -f "$INSTALL_DIR/.env" ]]; then
     echo ""
 fi
 
-chmod 600 "$INSTALL_DIR/.env"
+chmod 600 "$INSTALL_DIR/.env"  # restrict .env to owner only (contains secrets)
 chown -R "$SERVICE_NAME":"$SERVICE_NAME" "$INSTALL_DIR"
 
 # ---------------------------------------------------------------------------
@@ -89,6 +95,7 @@ chown -R "$SERVICE_NAME":"$SERVICE_NAME" "$INSTALL_DIR"
 
 echo "Setting up Python virtual environment..."
 
+# Create venv only if it doesn't already exist (safe for reinstalls)
 if [[ ! -d "$INSTALL_DIR/venv" ]]; then
     python3 -m venv "$INSTALL_DIR/venv"
 fi

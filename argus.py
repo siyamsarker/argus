@@ -35,10 +35,10 @@ LOG_FILE = os.path.join(LOG_DIR, "argus.log")
 LOG_MAX_BYTES = 10 * 1024 * 1024  # 10 MB
 LOG_BACKUP_COUNT = 5
 
-# Discord embed colours (decimal)
-COLOR_RED = 0xFF0000
-COLOR_GREEN = 0x00FF00
-COLOR_BLUE = 0x3498DB
+# Discord embed colours (passed as integers to the Discord API)
+COLOR_RED = 0xFF0000    # Alert: service went down
+COLOR_GREEN = 0x00FF00  # Recovery: service came back up
+COLOR_BLUE = 0x3498DB   # Startup: Argus is now watching
 
 HOSTNAME = socket.gethostname()
 
@@ -64,7 +64,7 @@ class Config:
 
         self._validate()
 
-    # ---- helpers -----------------------------------------------------------
+    # ---- private helpers ----------------------------------------------------
 
     @staticmethod
     def _require(key: str) -> str:
@@ -133,7 +133,8 @@ def setup_logging(level_name: str) -> logging.Logger:
     stdout_handler.setFormatter(fmt)
     logger.addHandler(stdout_handler)
 
-    # Rotating file handler — best-effort; skip if directory is missing
+    # Rotating file handler — creates the directory if needed, skips
+    # gracefully if permissions prevent it (e.g. running outside systemd).
     try:
         os.makedirs(LOG_DIR, exist_ok=True)
         file_handler = logging.handlers.RotatingFileHandler(
@@ -279,7 +280,7 @@ class ServiceState:
         self.name = name
         self.threshold = threshold
         self.consecutive_failures: int = 0
-        self.is_healthy: bool = True  # assume healthy at start
+        self.is_healthy: bool = True  # assume healthy at start to avoid false alerts on first run
         self.last_reason: str = ""
 
     def record_success(self) -> bool:
@@ -402,8 +403,6 @@ def _signal_handler(signum: int, _frame: Any) -> None:
     global _shutdown_requested
     _shutdown_requested = True
     sig_name = signal.Signals(signum).name
-    # Logging may not be safe inside a signal handler in all cases,
-    # but Python's logging module is reentrant enough for our purposes.
     logging.getLogger("argus").info("Received %s — initiating graceful shutdown.", sig_name)
 
 
@@ -420,7 +419,7 @@ def main() -> None:
     logger = setup_logging(config.log_level)
     logger.info(BANNER)
 
-    # Register signal handlers
+    # Register signal handlers for graceful shutdown (SIGTERM from systemd, SIGINT from Ctrl+C)
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
 
@@ -437,7 +436,7 @@ def main() -> None:
     # Startup notification
     send_startup_notification(session, config.discord_webhook_url, config, logger)
 
-    # Service states
+    # Service states — track consecutive failures per service for stateful alerting
     loki = ServiceState("Loki", config.failure_threshold)
     grafana = ServiceState("Grafana", config.failure_threshold)
 
@@ -489,10 +488,13 @@ def main() -> None:
                         grafana.consecutive_failures, config.failure_threshold, reason,
                     )
 
+        # Catch-all: log the error and keep the daemon alive.
+        # systemd Restart=on-failure handles truly fatal crashes.
         except Exception:
             logger.exception("Unexpected error in health-check loop — continuing.")
 
-        # Sleep in small increments so we can respond to signals promptly
+        # Sleep in 1-second increments instead of one long sleep so we can
+        # respond to SIGTERM/SIGINT promptly without waiting the full interval.
         for _ in range(config.check_interval):
             if _shutdown_requested:
                 break
