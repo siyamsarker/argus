@@ -39,10 +39,41 @@ if [[ "$PYTHON_MAJOR" -lt 3 ]] || { [[ "$PYTHON_MAJOR" -eq 3 ]] && [[ "$PYTHON_M
     exit 1
 fi
 
-# Ensure the venv module is available (not always installed by default on Debian/Ubuntu)
+# Ensure the venv module is available (not always installed by default)
 if ! python3 -c "import venv" &>/dev/null; then
     echo "ERROR: Python venv module is not installed." >&2
-    echo "       Install it with:  sudo apt install python${PYTHON_VERSION}-venv" >&2
+    echo "" >&2
+
+    # Detect distribution and provide appropriate install command
+    if [[ -f /etc/os-release ]]; then
+        . /etc/os-release
+        case "${ID:-unknown}" in
+            ubuntu|debian|linuxmint|pop)
+                echo "       Install it with:  sudo apt install python${PYTHON_VERSION}-venv" >&2
+                ;;
+            fedora|rhel|centos|rocky|almalinux)
+                echo "       Install it with:  sudo dnf install python${PYTHON_MAJOR}-pip" >&2
+                echo "                    or:  sudo yum install python${PYTHON_MAJOR}-pip" >&2
+                ;;
+            arch|manjaro|endeavouros)
+                echo "       Python venv should be included with python package." >&2
+                echo "       If missing, reinstall:  sudo pacman -S python" >&2
+                ;;
+            opensuse*|sles)
+                echo "       Install it with:  sudo zypper install python${PYTHON_MAJOR}-pip" >&2
+                ;;
+            alpine)
+                echo "       Install it with:  sudo apk add python3" >&2
+                ;;
+            *)
+                echo "       Install the Python venv module for your distribution." >&2
+                echo "       Package names: python3-venv, python${PYTHON_MAJOR}-pip, or similar" >&2
+                ;;
+        esac
+    else
+        echo "       Install the Python venv module for your distribution." >&2
+    fi
+
     exit 1
 fi
 
@@ -54,7 +85,16 @@ fi
 # The daemon runs as this user instead of root.
 if ! id "$SERVICE_NAME" &>/dev/null; then
     echo "Creating system user '$SERVICE_NAME'..."
-    useradd --system --no-create-home --shell /usr/sbin/nologin "$SERVICE_NAME"
+
+    # Find nologin shell location (varies by distro)
+    NOLOGIN_SHELL="/usr/sbin/nologin"
+    if [[ ! -f "$NOLOGIN_SHELL" ]] && [[ -f "/sbin/nologin" ]]; then
+        NOLOGIN_SHELL="/sbin/nologin"
+    elif [[ ! -f "$NOLOGIN_SHELL" ]]; then
+        NOLOGIN_SHELL="/bin/false"
+    fi
+
+    useradd --system --no-create-home --shell "$NOLOGIN_SHELL" "$SERVICE_NAME"
 else
     echo "System user '$SERVICE_NAME' already exists."
 fi
@@ -129,6 +169,19 @@ chown -R "$SERVICE_NAME":"$SERVICE_NAME" "$INSTALL_DIR/venv"
 # ---------------------------------------------------------------------------
 # Systemd service
 # ---------------------------------------------------------------------------
+
+# Check if systemd is available
+if ! command -v systemctl &>/dev/null; then
+    echo "" >&2
+    echo "ERROR: systemd is not available on this system." >&2
+    echo "       Argus requires systemd for service management." >&2
+    echo "" >&2
+    echo "       The application files have been installed to $INSTALL_DIR" >&2
+    echo "       You will need to manually configure your init system to run:" >&2
+    echo "       $INSTALL_DIR/venv/bin/python $INSTALL_DIR/argus.py" >&2
+    echo "" >&2
+    exit 1
+fi
 
 echo "Installing systemd service..."
 
