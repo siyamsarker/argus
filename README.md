@@ -2,7 +2,7 @@
   <h1 align="center">Argus</h1>
   <p align="center"><strong>The Hundred-Eyed Monitor</strong></p>
   <p align="center">
-    A lightweight health-monitoring daemon that watches Loki and Grafana<br>
+    A lightweight health-monitoring daemon that watches one or more Loki and Grafana instances<br>
     and sends Discord alerts when things go wrong.
   </p>
   <p align="center">
@@ -17,12 +17,13 @@
 
 Named after **Argus Panoptes**, the hundred-eyed giant of Greek mythology who never sleeps -- just like this daemon.
 
-Argus polls your Loki and Grafana health endpoints every 2 minutes, tracks consecutive failures to avoid false alarms, and sends rich Discord notifications only when a service actually goes down or comes back up.
+Argus polls your Loki and Grafana health endpoints every 2 minutes, tracks consecutive failures to avoid false alarms, and sends rich Discord notifications only when a service actually goes down or comes back up. You can monitor a single instance of each, or scale to multiple instances using comma-separated URLs.
 
 ## Features
 
 - **Loki monitoring** -- polls `/ready`, expects HTTP 200 with `ready` in the response body
 - **Grafana monitoring** -- polls `/api/health`, expects HTTP 200 with `"database": "ok"` in JSON
+- **Multi-instance support** -- monitor one or many Loki/Grafana instances via comma-separated URLs
 - **Stateful alerting** -- notifies only on state transitions, never spams on repeated failures
 - **Failure threshold** -- configurable consecutive failure count before declaring a service unhealthy (default: 2)
 - **Recovery notifications** -- alerts when a service comes back online
@@ -52,7 +53,7 @@ argus/
 - **Ubuntu / Debian** server (or any systemd-based Linux distribution)
 - **Python 3.10+**
 - A **Discord webhook URL** ([how to create one](https://support.discord.com/hc/en-us/articles/228383668-Intro-to-Webhooks))
-- Running **Loki** and **Grafana** instances with accessible health endpoints
+- Running **Loki** and **Grafana** instance(s) with accessible health endpoints
 
 ## Quick Start
 
@@ -67,9 +68,14 @@ cp .env.example .env
 Edit `.env` with your actual values:
 
 ```bash
+# Single instance
 LOKI_URL=http://192.168.1.50:3100
 GRAFANA_URL=http://192.168.1.50:3000
 DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/YOUR_ID/YOUR_TOKEN
+
+# Or multiple instances (comma-separated)
+# LOKI_URL=http://192.168.1.50:3100,http://192.168.1.51:3100
+# GRAFANA_URL=http://192.168.1.50:3000,http://192.168.1.51:3000
 ```
 
 ### 2. Install
@@ -101,13 +107,15 @@ All settings are loaded from `/opt/argus/.env` (or environment variables). The `
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `LOKI_URL` | Yes | -- | Base URL of the Loki instance (e.g. `http://host:3100`) |
-| `GRAFANA_URL` | Yes | -- | Base URL of the Grafana instance (e.g. `http://host:3000`) |
+| `LOKI_URL` | Yes | -- | Loki URL(s), comma-separated for multiple (e.g. `http://host:3100,http://host2:3100`) |
+| `GRAFANA_URL` | Yes | -- | Grafana URL(s), comma-separated for multiple (e.g. `http://host:3000,http://host2:3000`) |
 | `DISCORD_WEBHOOK_URL` | Yes | -- | Discord webhook URL for notifications |
 | `CHECK_INTERVAL_SECONDS` | No | `120` | Polling interval in seconds |
 | `FAILURE_THRESHOLD` | No | `2` | Consecutive failures before alerting |
 | `REQUEST_TIMEOUT_SECONDS` | No | `10` | HTTP timeout per health check |
 | `LOG_LEVEL` | No | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` |
+
+When monitoring multiple instances of the same service, each instance is tracked independently with its own failure counter and state. Discord alerts identify the specific instance by its `host:port`.
 
 After changing configuration, restart the service:
 
@@ -218,10 +226,12 @@ Argus is a single Python script running in a `while True` loop -- no async frame
               ┌────────────▼────────────┐
               │      Main Loop          │
               │  ┌───────────────────┐  │
-              │  │ Check Loki /ready │  │
+              │  │ For each Loki     │  │
+              │  │ instance: /ready  │  │
               │  └────────┬──────────┘  │
               │  ┌────────▼──────────┐  │
-              │  │ Check Grafana     │  │
+              │  │ For each Grafana  │  │
+              │  │ instance:         │  │
               │  │ /api/health       │  │
               │  └────────┬──────────┘  │
               │  ┌────────▼──────────┐  │
@@ -246,7 +256,7 @@ Argus is a single Python script running in a `while True` loop -- no async frame
 
 Key implementation details:
 
-- **Connection pooling** via `requests.Session` with `HTTPAdapter` for efficient HTTP reuse
+- **Connection pooling** via `requests.Session` with `HTTPAdapter`, pool sized dynamically to match instance count
 - **1-second sleep granularity** inside the interval loop for prompt signal response
 - **Top-level exception handler** wraps the main loop so the daemon never crashes
 - **systemd** handles process supervision (`Restart=on-failure`, `RestartSec=30`)
