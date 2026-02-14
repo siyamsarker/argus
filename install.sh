@@ -39,6 +39,13 @@ if [[ "$PYTHON_MAJOR" -lt 3 ]] || { [[ "$PYTHON_MAJOR" -eq 3 ]] && [[ "$PYTHON_M
     exit 1
 fi
 
+# Ensure the venv module is available (not always installed by default on Debian/Ubuntu)
+if ! python3 -c "import venv" &>/dev/null; then
+    echo "ERROR: Python venv module is not installed." >&2
+    echo "       Install it with:  sudo apt install python${PYTHON_VERSION}-venv" >&2
+    exit 1
+fi
+
 # ---------------------------------------------------------------------------
 # Create system user
 # ---------------------------------------------------------------------------
