@@ -36,9 +36,10 @@ LOG_MAX_BYTES = 10 * 1024 * 1024  # 10 MB
 LOG_BACKUP_COUNT = 5
 
 # Discord embed colours (passed as integers to the Discord API)
-COLOR_RED = 0xFF0000    # Alert: service went down
-COLOR_GREEN = 0x00FF00  # Recovery: service came back up
-COLOR_BLUE = 0x3498DB   # Startup: Argus is now watching
+COLOR_CRITICAL = 0xE74C3C  # Alert: service went down (professional red)
+COLOR_SUCCESS = 0x2ECC71   # Recovery: service came back up (professional green)
+COLOR_INFO = 0x3498DB      # Startup: Argus is now watching (professional blue)
+COLOR_WARNING = 0xF39C12   # Warning state (professional orange)
 
 HOSTNAME = socket.gethostname()
 
@@ -180,6 +181,12 @@ def setup_logging(level_name: str) -> logging.Logger:
 # ---------------------------------------------------------------------------
 # Discord helpers
 # ---------------------------------------------------------------------------
+
+def extract_service_endpoint(url: str) -> str:
+    """Extract IP:port or host:port from a service URL for display."""
+    parsed = urlparse(url)
+    return parsed.netloc if parsed.netloc else url
+
 
 def send_discord_embed(
     session: requests.Session,
@@ -361,22 +368,31 @@ def send_alert(
     session: requests.Session,
     webhook_url: str,
     service: ServiceState,
+    service_url: str,
     logger: logging.Logger,
 ) -> None:
     """Send an unhealthy alert embed to Discord."""
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    endpoint = extract_service_endpoint(service_url)
+    
     fields = [
-        {"name": "Service", "value": service.name, "inline": True},
-        {"name": "Status", "value": "UNHEALTHY", "inline": True},
-        {"name": "Timestamp", "value": now, "inline": False},
-        {"name": "Reason", "value": service.last_reason[:1024], "inline": False},
-        {"name": "Host", "value": HOSTNAME, "inline": True},
+        {"name": "\u200b", "value": "\u200b", "inline": False},  # Spacer
+        {"name": "📊 Service", "value": f"```{service.name}```", "inline": True},
+        {"name": "🔴 Status", "value": "```UNHEALTHY```", "inline": True},
+        {"name": "\u200b", "value": "\u200b", "inline": True},  # Force new row
+        {"name": "🌐 Endpoint", "value": f"`{endpoint}`", "inline": True},
+        {"name": "⏰ Timestamp", "value": f"`{now}`", "inline": True},
+        {"name": "\u200b", "value": "\u200b", "inline": True},  # Force new row
+        {"name": "❌ Failure Details", "value": f"```{service.last_reason[:900]}```", "inline": False},
+        {"name": "📈 Consecutive Failures", "value": f"`{service.consecutive_failures}`", "inline": True},
+        {"name": "💻 Monitored From", "value": f"`{HOSTNAME}`", "inline": True},
     ]
+    
     ok = send_discord_embed(
         session, webhook_url,
-        title=f"\u26a0\ufe0f {service.name} is DOWN",
-        description=f"{service.name} has failed {service.consecutive_failures} consecutive health checks.",
-        color=COLOR_RED,
+        title="🚨 Service Alert — System Down",
+        description=f"**{service.name}** has failed {service.consecutive_failures} consecutive health checks and is now marked as unhealthy.",
+        color=COLOR_CRITICAL,
         fields=fields,
         logger=logger,
     )
@@ -390,21 +406,29 @@ def send_recovery(
     session: requests.Session,
     webhook_url: str,
     service: ServiceState,
+    service_url: str,
     logger: logging.Logger,
 ) -> None:
     """Send a recovery embed to Discord."""
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    endpoint = extract_service_endpoint(service_url)
+    
     fields = [
-        {"name": "Service", "value": service.name, "inline": True},
-        {"name": "Status", "value": "HEALTHY", "inline": True},
-        {"name": "Timestamp", "value": now, "inline": False},
-        {"name": "Host", "value": HOSTNAME, "inline": True},
+        {"name": "\u200b", "value": "\u200b", "inline": False},  # Spacer
+        {"name": "📊 Service", "value": f"```{service.name}```", "inline": True},
+        {"name": "🟢 Status", "value": "```HEALTHY```", "inline": True},
+        {"name": "\u200b", "value": "\u200b", "inline": True},  # Force new row
+        {"name": "🌐 Endpoint", "value": f"`{endpoint}`", "inline": True},
+        {"name": "⏰ Timestamp", "value": f"`{now}`", "inline": True},
+        {"name": "\u200b", "value": "\u200b", "inline": True},  # Force new row
+        {"name": "💻 Monitored From", "value": f"`{HOSTNAME}`", "inline": True},
     ]
+    
     ok = send_discord_embed(
         session, webhook_url,
-        title=f"\u2705 {service.name} has RECOVERED",
-        description=f"{service.name} is back online and healthy.",
-        color=COLOR_GREEN,
+        title="✅ Service Recovery — System Restored",
+        description=f"**{service.name}** has recovered and is now operating normally. All health checks are passing.",
+        color=COLOR_SUCCESS,
         fields=fields,
         logger=logger,
     )
@@ -422,19 +446,30 @@ def send_startup_notification(
 ) -> None:
     """Send a one-time startup notification to Discord."""
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    
+    # Format monitored endpoints with IP:port extraction
+    loki_endpoints = "\n".join([f"• `{extract_service_endpoint(url)}`" for url in config.loki_urls])
+    grafana_endpoints = "\n".join([f"• `{extract_service_endpoint(url)}`" for url in config.grafana_urls])
+    
     fields = [
-        {"name": "Host", "value": HOSTNAME, "inline": True},
-        {"name": "Interval", "value": f"{config.check_interval}s", "inline": True},
-        {"name": "Failure Threshold", "value": str(config.failure_threshold), "inline": True},
-        {"name": "Loki", "value": ", ".join(config.loki_urls), "inline": False},
-        {"name": "Grafana", "value": ", ".join(config.grafana_urls), "inline": False},
-        {"name": "Started At", "value": now, "inline": False},
+        {"name": "\u200b", "value": "\u200b", "inline": False},  # Spacer
+        {"name": "⚙️ Configuration", "value": "\u200b", "inline": False},
+        {"name": "💻 Monitoring Host", "value": f"`{HOSTNAME}`", "inline": True},
+        {"name": "⏱️ Check Interval", "value": f"`{config.check_interval}s`", "inline": True},
+        {"name": "📉 Failure Threshold", "value": f"`{config.failure_threshold} checks`", "inline": True},
+        {"name": "\u200b", "value": "\u200b", "inline": False},  # Spacer
+        {"name": "📡 Monitored Services", "value": "\u200b", "inline": False},
+        {"name": "🔵 Loki Instances", "value": loki_endpoints if loki_endpoints else "`None configured`", "inline": False},
+        {"name": "🟠 Grafana Instances", "value": grafana_endpoints if grafana_endpoints else "`None configured`", "inline": False},
+        {"name": "\u200b", "value": "\u200b", "inline": False},  # Spacer
+        {"name": "🕐 Started At", "value": f"`{now}`", "inline": False},
     ]
+    
     ok = send_discord_embed(
         session, webhook_url,
-        title=f"\U0001f441\ufe0f Argus is now watching",
-        description=BANNER,
-        color=COLOR_BLUE,
+        title="👁️ Argus Monitoring System — Online",
+        description=f"**{BANNER}**\n\nHealth monitoring is now active. All configured services are being watched for availability.",
+        color=COLOR_INFO,
         fields=fields,
         logger=logger,
     )
@@ -525,12 +560,12 @@ def main() -> None:
                     transitioned = state.record_success()
                     if transitioned:
                         logger.info("%s recovered.", state.name)
-                        send_recovery(session, config.discord_webhook_url, state, logger)
+                        send_recovery(session, config.discord_webhook_url, state, url, logger)
                 else:
                     transitioned = state.record_failure(reason)
                     if transitioned:
                         logger.warning("%s is UNHEALTHY: %s", state.name, reason)
-                        send_alert(session, config.discord_webhook_url, state, logger)
+                        send_alert(session, config.discord_webhook_url, state, url, logger)
                     else:
                         logger.debug(
                             "%s failure %d/%d: %s",
@@ -546,12 +581,12 @@ def main() -> None:
                     transitioned = state.record_success()
                     if transitioned:
                         logger.info("%s recovered.", state.name)
-                        send_recovery(session, config.discord_webhook_url, state, logger)
+                        send_recovery(session, config.discord_webhook_url, state, url, logger)
                 else:
                     transitioned = state.record_failure(reason)
                     if transitioned:
                         logger.warning("%s is UNHEALTHY: %s", state.name, reason)
-                        send_alert(session, config.discord_webhook_url, state, logger)
+                        send_alert(session, config.discord_webhook_url, state, url, logger)
                     else:
                         logger.debug(
                             "%s failure %d/%d: %s",
