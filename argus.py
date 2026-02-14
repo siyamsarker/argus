@@ -208,23 +208,35 @@ def send_discord_embed(
     }
 
     max_attempts = 3
+    max_rate_limit_retries = 5
     backoff = 2  # seconds, doubles each retry
 
     attempt = 0
+    rate_limit_hits = 0
     while attempt < max_attempts:
         try:
             resp = session.post(webhook_url, json=payload, timeout=15)
 
-            # Discord rate-limit handling — does not consume an attempt
+            # Discord rate-limit handling — retries without consuming an attempt,
+            # but capped to prevent an infinite loop if 429s persist.
             if resp.status_code == 429:
+                rate_limit_hits += 1
+                if rate_limit_hits > max_rate_limit_retries:
+                    if logger:
+                        logger.error(
+                            "Discord rate-limit retries exhausted (%d hits).",
+                            rate_limit_hits,
+                        )
+                    return False
                 try:
                     retry_after = float(resp.json().get("retry_after", backoff))
                 except (ValueError, KeyError):
                     retry_after = float(backoff)
+                retry_after = min(retry_after, 60.0)  # cap to avoid excessively long waits
                 if logger:
                     logger.warning(
-                        "Discord rate-limited; retrying after %.1f s",
-                        retry_after,
+                        "Discord rate-limited; retrying after %.1f s (%d/%d)",
+                        retry_after, rate_limit_hits, max_rate_limit_retries,
                     )
                 time.sleep(retry_after)
                 continue
