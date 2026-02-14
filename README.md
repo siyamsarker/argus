@@ -1,32 +1,75 @@
-# Argus — The Hundred-Eyed Monitor
+<p align="center">
+  <h1 align="center">Argus</h1>
+  <p align="center"><strong>The Hundred-Eyed Monitor</strong></p>
+  <p align="center">
+    A lightweight health-monitoring daemon that watches Loki and Grafana<br>
+    and sends Discord alerts when things go wrong.
+  </p>
+  <p align="center">
+    <img src="https://img.shields.io/badge/python-3.10%2B-blue" alt="Python 3.10+">
+    <img src="https://img.shields.io/badge/platform-Ubuntu%20%7C%20Debian-orange" alt="Platform">
+    <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
+    <img src="https://img.shields.io/badge/status-production--ready-brightgreen" alt="Status">
+  </p>
+</p>
 
-A lightweight health-monitoring daemon that watches Loki and Grafana instances and sends Discord alerts on state transitions. Named after Argus Panoptes, the hundred-eyed giant of Greek mythology who never sleeps.
+---
+
+Named after **Argus Panoptes**, the hundred-eyed giant of Greek mythology who never sleeps -- just like this daemon.
+
+Argus polls your Loki and Grafana health endpoints every 2 minutes, tracks consecutive failures to avoid false alarms, and sends rich Discord notifications only when a service actually goes down or comes back up.
 
 ## Features
 
-- Polls Loki `/ready` and Grafana `/api/health` endpoints on a configurable interval
-- Stateful alerting — notifies only on state transitions (healthy → unhealthy, unhealthy → healthy)
-- Consecutive failure threshold to avoid false alarms from transient blips
-- Discord webhook integration with embeds, retry logic, and rate-limit handling
-- Runs as a systemd service with auto-restart on failure
-- Structured logging to stdout (journald) and rotating log files
+- **Loki monitoring** -- polls `/ready`, expects HTTP 200 with `ready` in the response body
+- **Grafana monitoring** -- polls `/api/health`, expects HTTP 200 with `"database": "ok"` in JSON
+- **Stateful alerting** -- notifies only on state transitions, never spams on repeated failures
+- **Failure threshold** -- configurable consecutive failure count before declaring a service unhealthy (default: 2)
+- **Recovery notifications** -- alerts when a service comes back online
+- **Discord embeds** -- color-coded messages (red for alerts, green for recovery, blue for startup)
+- **Retry with backoff** -- 3 attempts with exponential backoff on webhook failures
+- **Rate-limit aware** -- handles Discord 429 responses using `Retry-After`
+- **Graceful shutdown** -- handles `SIGTERM` and `SIGINT` for clean systemd stops
+- **Rotating log files** -- 10 MB max, 5 backups at `/var/log/argus/argus.log`
+- **Systemd integration** -- auto-start on boot, auto-restart on crash
+- **Security hardened** -- runs as a dedicated non-root user with systemd sandboxing
+
+## Project Structure
+
+```
+argus/
+├── argus.py           # Main daemon script
+├── argus.service      # systemd unit file
+├── install.sh         # Automated setup script
+├── .env.example       # Configuration template
+├── requirements.txt   # Pinned Python dependencies
+├── LICENSE            # MIT License
+└── README.md
+```
+
+## Prerequisites
+
+- **Ubuntu / Debian** server (or any systemd-based Linux distribution)
+- **Python 3.10+**
+- A **Discord webhook URL** ([how to create one](https://support.discord.com/hc/en-us/articles/228383668-Intro-to-Webhooks))
+- Running **Loki** and **Grafana** instances with accessible health endpoints
 
 ## Quick Start
 
 ### 1. Clone and configure
 
 ```bash
-git clone https://github.com/siyamsarker/argus.git /tmp/argus
-cd /tmp/argus
+git clone https://github.com/siyamsarker/argus.git
+cd argus
 cp .env.example .env
 ```
 
 Edit `.env` with your actual values:
 
-```
+```bash
 LOKI_URL=http://192.168.1.50:3100
 GRAFANA_URL=http://192.168.1.50:3000
-DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
+DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/YOUR_ID/YOUR_TOKEN
 ```
 
 ### 2. Install
@@ -35,12 +78,13 @@ DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
 sudo bash install.sh
 ```
 
-This will:
+The install script will:
 
-- Create a `argus` system user (no login shell)
-- Copy files to `/opt/argus/`
-- Create a Python virtual environment and install dependencies
-- Install and start the systemd service
+- Create an `argus` system user (no login shell)
+- Set up `/opt/argus/` with a Python virtual environment
+- Install pinned dependencies (`requests`, `python-dotenv`)
+- Copy the systemd unit file, enable, and start the service
+- Create `/var/log/argus/` with proper ownership
 
 ### 3. Verify
 
@@ -49,21 +93,39 @@ systemctl status argus
 journalctl -u argus -f
 ```
 
-You should see a startup notification in your Discord channel.
+On successful startup, Argus sends a blue "Argus is now watching" notification to your Discord channel.
 
-## Configuration Reference
+## Configuration
 
-All settings are loaded from `/opt/argus/.env` (or environment variables).
+All settings are loaded from `/opt/argus/.env` (or environment variables). The `.env` file is set to `chmod 600` for security.
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `LOKI_URL` | Yes | — | Base URL of the Loki instance (e.g. `http://host:3100`) |
-| `GRAFANA_URL` | Yes | — | Base URL of the Grafana instance (e.g. `http://host:3000`) |
-| `DISCORD_WEBHOOK_URL` | Yes | — | Discord webhook URL for notifications |
+| `LOKI_URL` | Yes | -- | Base URL of the Loki instance (e.g. `http://host:3100`) |
+| `GRAFANA_URL` | Yes | -- | Base URL of the Grafana instance (e.g. `http://host:3000`) |
+| `DISCORD_WEBHOOK_URL` | Yes | -- | Discord webhook URL for notifications |
 | `CHECK_INTERVAL_SECONDS` | No | `120` | Polling interval in seconds |
 | `FAILURE_THRESHOLD` | No | `2` | Consecutive failures before alerting |
-| `REQUEST_TIMEOUT_SECONDS` | No | `10` | HTTP timeout for health checks |
-| `LOG_LEVEL` | No | `INFO` | Logging level: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` |
+| `REQUEST_TIMEOUT_SECONDS` | No | `10` | HTTP timeout per health check |
+| `LOG_LEVEL` | No | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` |
+
+After changing configuration, restart the service:
+
+```bash
+sudo systemctl restart argus
+```
+
+## Discord Notifications
+
+Argus sends three types of Discord embeds:
+
+| Type | Color | When |
+|---|---|---|
+| **Startup** | Blue | Argus starts successfully |
+| **Alert** | Red | A service transitions from healthy to unhealthy |
+| **Recovery** | Green | A service transitions from unhealthy back to healthy |
+
+Every embed includes: service name, status, timestamp (UTC), hostname, and failure reason (for alerts).
 
 ## Managing the Service
 
@@ -74,38 +136,41 @@ systemctl status argus
 # View live logs
 journalctl -u argus -f
 
-# Restart after config change
+# Restart
 sudo systemctl restart argus
 
 # Stop
 sudo systemctl stop argus
 
-# Disable (prevent start on boot)
+# Disable auto-start on boot
 sudo systemctl disable argus
 ```
 
-## Log Files
+## Logs
 
-- **journald**: `journalctl -u argus`
-- **File**: `/var/log/argus/argus.log` (10 MB max, 5 rotated backups)
+| Destination | Location |
+|---|---|
+| journald | `journalctl -u argus` |
+| Log file | `/var/log/argus/argus.log` (10 MB, 5 rotated backups) |
+
+Set `LOG_LEVEL=DEBUG` in `.env` to see every individual health check result.
 
 ## Testing
 
-### Trigger an alert with an intentionally wrong URL
+### Trigger an alert with a wrong URL
 
-Edit `/opt/argus/.env` and set an invalid Loki URL:
+Set an unreachable Loki URL to simulate a failure:
 
-```
+```bash
+# Edit /opt/argus/.env
 LOKI_URL=http://127.0.0.1:9999
 ```
-
-Restart the service:
 
 ```bash
 sudo systemctl restart argus
 ```
 
-After `FAILURE_THRESHOLD` consecutive failures (default: 2 checks), you should receive a red alert embed in Discord. Restore the correct URL and restart to see a green recovery notification.
+After 2 consecutive failures (default threshold), a red alert embed appears in Discord. Restore the correct URL and restart to see a green recovery notification.
 
 ### Verify logs
 
@@ -115,14 +180,9 @@ journalctl -u argus -f
 
 # Log file
 tail -f /var/log/argus/argus.log
-
-# Debug-level output (shows every check result)
-# Set LOG_LEVEL=DEBUG in .env, then restart
 ```
 
-### Manually send a test Discord notification
-
-You can test your webhook independently with curl:
+### Test your Discord webhook independently
 
 ```bash
 curl -H "Content-Type: application/json" \
@@ -130,9 +190,7 @@ curl -H "Content-Type: application/json" \
      "https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_WEBHOOK_TOKEN"
 ```
 
-### Run directly (without systemd)
-
-For development or quick testing:
+### Run manually (without systemd)
 
 ```bash
 cd /opt/argus
@@ -141,6 +199,58 @@ python argus.py
 ```
 
 Press `Ctrl+C` for graceful shutdown.
+
+## Architecture
+
+Argus is a single Python script running in a `while True` loop -- no async frameworks, no threads, no external schedulers.
+
+```
+                    ┌──────────────┐
+                    │   Startup    │
+                    │  Validation  │
+                    └──────┬───────┘
+                           │
+                    ┌──────▼───────┐
+                    │  Discord:    │
+                    │  "Watching"  │
+                    └──────┬───────┘
+                           │
+              ┌────────────▼────────────┐
+              │      Main Loop          │
+              │  ┌───────────────────┐  │
+              │  │ Check Loki /ready │  │
+              │  └────────┬──────────┘  │
+              │  ┌────────▼──────────┐  │
+              │  │ Check Grafana     │  │
+              │  │ /api/health       │  │
+              │  └────────┬──────────┘  │
+              │  ┌────────▼──────────┐  │
+              │  │ State transition? │  │
+              │  │ → Discord alert   │  │
+              │  └────────┬──────────┘  │
+              │  ┌────────▼──────────┐  │
+              │  │ Sleep (interval)  │  │
+              │  └────────┬──────────┘  │
+              │           │             │
+              └───────────┘─────────────┘
+                           │
+                    ┌──────▼───────┐
+                    │  SIGTERM /   │
+                    │  SIGINT      │
+                    └──────┬───────┘
+                           │
+                    ┌──────▼───────┐
+                    │   Shutdown   │
+                    └──────────────┘
+```
+
+Key implementation details:
+
+- **Connection pooling** via `requests.Session` with `HTTPAdapter` for efficient HTTP reuse
+- **1-second sleep granularity** inside the interval loop for prompt signal response
+- **Top-level exception handler** wraps the main loop so the daemon never crashes
+- **systemd** handles process supervision (`Restart=on-failure`, `RestartSec=30`)
+- **Security hardening** in the unit file: `NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`
 
 ## Uninstall
 
@@ -155,26 +265,15 @@ sudo rm -rf /opt/argus /var/log/argus
 
 ## Troubleshooting
 
-| Symptom | Check |
+| Symptom | Solution |
 |---|---|
-| Service won't start | `journalctl -u argus -e` — look for `FATAL:` config errors |
-| No Discord notifications | Verify `DISCORD_WEBHOOK_URL` with the curl test above |
+| Service won't start | Run `journalctl -u argus -e` and look for `FATAL:` config errors |
+| No Discord notifications | Test the webhook URL with the `curl` command above |
 | Too many alerts | Increase `FAILURE_THRESHOLD` to require more consecutive failures |
 | Alerts are delayed | Decrease `CHECK_INTERVAL_SECONDS` for faster detection |
-| Permission denied on log file | Ensure `/var/log/argus/` is owned by the `argus` user |
-| Python version error | Argus requires Python 3.10+; check with `python3 --version` |
-
-## Architecture
-
-Argus is intentionally simple — a single Python script in a `while True` loop:
-
-1. Poll Loki `/ready` and Grafana `/api/health`
-2. Track consecutive failures per service
-3. On state transition → send Discord embed (red alert or green recovery)
-4. Sleep for `CHECK_INTERVAL_SECONDS`
-5. Repeat
-
-systemd handles process supervision (auto-restart on crash). Signal handlers (`SIGTERM`, `SIGINT`) enable graceful shutdown.
+| Permission denied on log file | Run `sudo chown argus:argus /var/log/argus` |
+| Python version error | Argus requires Python 3.10+. Check with `python3 --version` |
+| Config not taking effect | Restart the service after editing `.env`: `sudo systemctl restart argus` |
 
 ## Contributing
 
@@ -182,4 +281,4 @@ Contributions are welcome. Please open an issue to discuss proposed changes befo
 
 ## License
 
-This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
+This project is licensed under the [MIT License](LICENSE).
