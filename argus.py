@@ -9,6 +9,7 @@ Panoptes, the hundred-eyed giant of Greek mythology who never sleeps.
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import logging.handlers
 import os
@@ -275,11 +276,11 @@ def send_discord_embed(
 # Health check implementations
 # ---------------------------------------------------------------------------
 
-def check_loki(session: requests.Session, url: str, timeout: int) -> tuple[bool, str]:
+def check_loki(url: str, timeout: int) -> tuple[bool, str]:
     """Check Loki readiness. Returns (healthy, reason)."""
     endpoint = url.rstrip("/") + "/ready"
     try:
-        resp = session.get(endpoint, timeout=timeout)
+        resp = requests.get(endpoint, timeout=timeout)
         if resp.status_code != 200:
             return False, f"HTTP {resp.status_code} from {endpoint}"
         if "ready" not in resp.text.lower():
@@ -293,11 +294,11 @@ def check_loki(session: requests.Session, url: str, timeout: int) -> tuple[bool,
         return False, f"Request failed: {exc}"
 
 
-def check_grafana(session: requests.Session, url: str, timeout: int) -> tuple[bool, str]:
+def check_grafana(url: str, timeout: int) -> tuple[bool, str]:
     """Check Grafana health. Returns (healthy, reason)."""
     endpoint = url.rstrip("/") + "/api/health"
     try:
-        resp = session.get(endpoint, timeout=timeout)
+        resp = requests.get(endpoint, timeout=timeout)
         if resp.status_code != 200:
             return False, f"HTTP {resp.status_code} from {endpoint}"
         try:
@@ -370,9 +371,10 @@ def send_alert(
     service: ServiceState,
     service_url: str,
     logger: logging.Logger,
+    event_time: datetime | None = None,
 ) -> None:
     """Send an unhealthy alert embed to Discord."""
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    now = (event_time or datetime.now(timezone.utc)).strftime("%Y-%m-%d %H:%M:%S UTC")
     endpoint = extract_service_endpoint(service_url)
     
     fields = [
@@ -405,9 +407,10 @@ def send_recovery(
     service: ServiceState,
     service_url: str,
     logger: logging.Logger,
+    event_time: datetime | None = None,
 ) -> None:
     """Send a recovery embed to Discord."""
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    now = (event_time or datetime.now(timezone.utc)).strftime("%Y-%m-%d %H:%M:%S UTC")
     endpoint = extract_service_endpoint(service_url)
     
     fields = [
@@ -536,62 +539,74 @@ def main() -> None:
         loki_summary, grafana_summary, config.check_interval, config.failure_threshold,
     )
 
+    probe_workers = max(1, len(loki_instances) + len(grafana_instances))
+    next_run = time.monotonic()
+
     # ----- main loop -------------------------------------------------------
     while not _shutdown_requested:
         try:
-            # -- Loki checks -------------------------------------------------
-            for url, state in loki_instances:
-                healthy, reason = check_loki(session, url, config.request_timeout)
-                logger.debug("%s check: healthy=%s reason=%s", state.name, healthy, reason)
+            poll_timestamp = datetime.now(timezone.utc)
 
-                if healthy:
-                    transitioned = state.record_success()
-                    if transitioned:
-                        logger.info("%s recovered.", state.name)
-                        send_recovery(session, config.discord_webhook_url, state, url, logger)
-                else:
-                    transitioned = state.record_failure(reason)
-                    if transitioned:
-                        logger.warning("%s is UNHEALTHY: %s", state.name, reason)
-                        send_alert(session, config.discord_webhook_url, state, url, logger)
+            future_map: dict[concurrent.futures.Future[tuple[bool, str]], tuple[str, ServiceState]] = {}
+            with concurrent.futures.ThreadPoolExecutor(max_workers=probe_workers) as executor:
+                for url, state in loki_instances:
+                    future = executor.submit(check_loki, url, config.request_timeout)
+                    future_map[future] = (url, state)
+
+                for url, state in grafana_instances:
+                    future = executor.submit(check_grafana, url, config.request_timeout)
+                    future_map[future] = (url, state)
+
+                for future in concurrent.futures.as_completed(future_map):
+                    url, state = future_map[future]
+                    healthy, reason = future.result()
+                    logger.debug("%s check: healthy=%s reason=%s", state.name, healthy, reason)
+
+                    if healthy:
+                        transitioned = state.record_success()
+                        if transitioned:
+                            logger.info("%s recovered.", state.name)
+                            send_recovery(
+                                session,
+                                config.discord_webhook_url,
+                                state,
+                                url,
+                                logger,
+                                event_time=poll_timestamp,
+                            )
                     else:
-                        logger.debug(
-                            "%s failure %d/%d: %s",
-                            state.name, state.consecutive_failures, config.failure_threshold, reason,
-                        )
-
-            # -- Grafana checks ----------------------------------------------
-            for url, state in grafana_instances:
-                healthy, reason = check_grafana(session, url, config.request_timeout)
-                logger.debug("%s check: healthy=%s reason=%s", state.name, healthy, reason)
-
-                if healthy:
-                    transitioned = state.record_success()
-                    if transitioned:
-                        logger.info("%s recovered.", state.name)
-                        send_recovery(session, config.discord_webhook_url, state, url, logger)
-                else:
-                    transitioned = state.record_failure(reason)
-                    if transitioned:
-                        logger.warning("%s is UNHEALTHY: %s", state.name, reason)
-                        send_alert(session, config.discord_webhook_url, state, url, logger)
-                    else:
-                        logger.debug(
-                            "%s failure %d/%d: %s",
-                            state.name, state.consecutive_failures, config.failure_threshold, reason,
-                        )
+                        transitioned = state.record_failure(reason)
+                        if transitioned:
+                            logger.warning("%s is UNHEALTHY: %s", state.name, reason)
+                            send_alert(
+                                session,
+                                config.discord_webhook_url,
+                                state,
+                                url,
+                                logger,
+                                event_time=poll_timestamp,
+                            )
+                        else:
+                            logger.debug(
+                                "%s failure %d/%d: %s",
+                                state.name,
+                                state.consecutive_failures,
+                                config.failure_threshold,
+                                reason,
+                            )
 
         # Catch-all: log the error and keep the daemon alive.
         # systemd Restart=on-failure handles truly fatal crashes.
         except Exception:
             logger.exception("Unexpected error in health-check loop — continuing.")
 
-        # Sleep in 1-second increments instead of one long sleep so we can
-        # respond to SIGTERM/SIGINT promptly without waiting the full interval.
-        for _ in range(config.check_interval):
-            if _shutdown_requested:
+        # Fixed-interval scheduler based on monotonic time to avoid drift.
+        next_run += config.check_interval
+        while not _shutdown_requested:
+            remaining = next_run - time.monotonic()
+            if remaining <= 0:
                 break
-            time.sleep(1)
+            time.sleep(min(1.0, remaining))
 
     # ----- clean shutdown ---------------------------------------------------
     session.close()
