@@ -376,22 +376,19 @@ def send_alert(
     endpoint = extract_service_endpoint(service_url)
     
     fields = [
-        {"name": "\u200b", "value": "\u200b", "inline": False},  # Spacer
-        {"name": "📊 Service", "value": f"```{service.name}```", "inline": True},
-        {"name": "🔴 Status", "value": "```UNHEALTHY```", "inline": True},
-        {"name": "\u200b", "value": "\u200b", "inline": True},  # Force new row
-        {"name": "🌐 Endpoint", "value": f"`{endpoint}`", "inline": True},
-        {"name": "⏰ Timestamp", "value": f"`{now}`", "inline": True},
-        {"name": "\u200b", "value": "\u200b", "inline": True},  # Force new row
-        {"name": "❌ Failure Details", "value": f"```{service.last_reason[:900]}```", "inline": False},
-        {"name": "📈 Consecutive Failures", "value": f"`{service.consecutive_failures}`", "inline": True},
-        {"name": "💻 Monitored From", "value": f"`{HOSTNAME}`", "inline": True},
+        {"name": "Service", "value": f"`{service.name}`", "inline": True},
+        {"name": "Status", "value": "`🔴 UNHEALTHY`", "inline": True},
+        {"name": "Failures", "value": f"`{service.consecutive_failures}x`", "inline": True},
+        {"name": "Endpoint", "value": f"`{endpoint}`", "inline": True},
+        {"name": "Host", "value": f"`{HOSTNAME}`", "inline": True},
+        {"name": "Time", "value": f"`{now}`", "inline": True},
+        {"name": "Error", "value": f"```{service.last_reason[:800]}```", "inline": False},
     ]
     
     ok = send_discord_embed(
         session, webhook_url,
-        title="🚨 Service Alert — System Down",
-        description=f"**{service.name}** has failed {service.consecutive_failures} consecutive health checks and is now marked as unhealthy.",
+        title="🚨 Alert: Service Down",
+        description=f"**{service.name}** failed {service.consecutive_failures} consecutive health checks.",
         color=COLOR_CRITICAL,
         fields=fields,
         logger=logger,
@@ -414,20 +411,17 @@ def send_recovery(
     endpoint = extract_service_endpoint(service_url)
     
     fields = [
-        {"name": "\u200b", "value": "\u200b", "inline": False},  # Spacer
-        {"name": "📊 Service", "value": f"```{service.name}```", "inline": True},
-        {"name": "🟢 Status", "value": "```HEALTHY```", "inline": True},
-        {"name": "\u200b", "value": "\u200b", "inline": True},  # Force new row
-        {"name": "🌐 Endpoint", "value": f"`{endpoint}`", "inline": True},
-        {"name": "⏰ Timestamp", "value": f"`{now}`", "inline": True},
-        {"name": "\u200b", "value": "\u200b", "inline": True},  # Force new row
-        {"name": "💻 Monitored From", "value": f"`{HOSTNAME}`", "inline": True},
+        {"name": "Service", "value": f"`{service.name}`", "inline": True},
+        {"name": "Status", "value": "`🟢 HEALTHY`", "inline": True},
+        {"name": "Host", "value": f"`{HOSTNAME}`", "inline": True},
+        {"name": "Endpoint", "value": f"`{endpoint}`", "inline": True},
+        {"name": "Time", "value": f"`{now}`", "inline": True},
     ]
     
     ok = send_discord_embed(
         session, webhook_url,
-        title="✅ Service Recovery — System Restored",
-        description=f"**{service.name}** has recovered and is now operating normally. All health checks are passing.",
+        title="✅ Recovery: Service Restored",
+        description=f"**{service.name}** has recovered and all health checks are passing.",
         color=COLOR_SUCCESS,
         fields=fields,
         logger=logger,
@@ -452,17 +446,11 @@ def send_startup_notification(
     grafana_endpoints = "\n".join([f"• `{extract_service_endpoint(url)}`" for url in config.grafana_urls])
     
     fields = [
-        {"name": "\u200b", "value": "\u200b", "inline": False},  # Spacer
-        {"name": "⚙️ Configuration", "value": "\u200b", "inline": False},
-        {"name": "💻 Monitoring Host", "value": f"`{HOSTNAME}`", "inline": True},
-        {"name": "⏱️ Check Interval", "value": f"`{config.check_interval}s`", "inline": True},
-        {"name": "📉 Failure Threshold", "value": f"`{config.failure_threshold} checks`", "inline": True},
-        {"name": "\u200b", "value": "\u200b", "inline": False},  # Spacer
-        {"name": "📡 Monitored Services", "value": "\u200b", "inline": False},
-        {"name": "🔵 Loki Instances", "value": loki_endpoints if loki_endpoints else "`None configured`", "inline": False},
-        {"name": "🟠 Grafana Instances", "value": grafana_endpoints if grafana_endpoints else "`None configured`", "inline": False},
-        {"name": "\u200b", "value": "\u200b", "inline": False},  # Spacer
-        {"name": "🕐 Started At", "value": f"`{now}`", "inline": False},
+        {"name": "Monitoring Host", "value": f"`{HOSTNAME}`", "inline": True},
+        {"name": "Check Interval", "value": f"`{config.check_interval}s`", "inline": True},
+        {"name": "Failure Threshold", "value": f"`{config.failure_threshold} checks`", "inline": True},
+        {"name": "Loki Instances", "value": loki_endpoints if loki_endpoints else "`None`", "inline": False},
+        {"name": "Grafana Instances", "value": grafana_endpoints if grafana_endpoints else "`None`", "inline": False},
     ]
     
     ok = send_discord_embed(
